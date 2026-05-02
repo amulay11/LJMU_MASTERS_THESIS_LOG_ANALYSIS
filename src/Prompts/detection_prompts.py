@@ -268,12 +268,28 @@ HDFS_CONFIG = DatasetConfig(
 # LLM APPROACH: FEW-SHOT CHAIN-OF-THOUGHT (E02)
 # =============================================================================
 
-# Generic CoT template — {analysis} is filled from DatasetConfig.normal_cot_analysis
+# Generic CoT template — {analysis} is filled per-log by _make_normal_cot()
 COT_NORMAL_TEMPLATE = """\
 Log: {log_text}
 Analysis:
 {analysis}
 Decision: {{"label": "Normal", "confidence": 0.05}}"""
+
+
+def _make_normal_cot(log_text: str, config: DatasetConfig) -> str:
+    """Generate log-specific normal CoT analysis by extracting component and level."""
+    import re
+    m = re.match(r'\[([^\]]+)\]\s*\[([^\]]+)\]', log_text)
+    if m:
+        component, level = m.group(1).strip(), m.group(2).strip()
+        return (
+            f"- Component: {component}, severity: {level} — both within expected operational range.\n"
+            "- Content matches a routine informational or status message.\n"
+            "- No error keywords, exception traces, hardware fault indicators, or "
+            "unexpected state transitions are present.\n"
+            "- This pattern is consistent with normal system operation."
+        )
+    return config.normal_cot_analysis
 
 
 def format_anomalous_example(ex: Dict, idx: int) -> str:
@@ -315,7 +331,7 @@ def build_llm_system_prompt(
         f"Example {i + 1} (Normal):\n"
         + COT_NORMAL_TEMPLATE.format(
             log_text=row["log_text"],
-            analysis=config.normal_cot_analysis,
+            analysis=_make_normal_cot(row["log_text"], config),
         )
         for i, (_, row) in enumerate(few_shot_normal.iterrows())
     )
@@ -347,11 +363,8 @@ def build_llm_system_prompt(
         "directly from the specific content of THAT entry — the relevant fields and context "
         "visible in the log text. "
         "Do NOT copy or adapt the example explanations below.\n\n"
-        "CLASSIFICATION RULE: Only label a log as Anomalous when it contains EXPLICIT fault indicators:\n"
-        "  • ERROR or FATAL severity level, AND failure content (hardware fault, crash, exception,\n"
-        "    signal kill, lost connection, test failure, or communication error).\n"
-        "  • If the severity is INFO or WARNING with routine operational content → Normal.\n"
-        "  • When uncertain, classify as Normal — false negatives are preferable to false alarms.\n\n"
+        "NOTE: ~93% of BGL logs are Normal. Classify as Anomalous ONLY for definitive "
+        "ERROR/FATAL-level hardware faults or job failures. When uncertain, classify as Normal.\n\n"
         f"--- FEW-SHOT EXAMPLES (NORMAL — drawn from real {config.name} logs) ---\n\n"
         + normal_examples
         + "\n\n--- FEW-SHOT EXAMPLES (ANOMALOUS — illustrate required output structure) ---\n\n"
