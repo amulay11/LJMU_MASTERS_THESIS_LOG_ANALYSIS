@@ -276,20 +276,52 @@ Analysis:
 Decision: {{"label": "Normal", "confidence": 0.05}}"""
 
 
+_SELF_HEALING_PATTERNS = [
+    ("corrected",        "automatically corrected by hardware ECC — not an unrecoverable fault"),
+    ("detected and corrected", "detected and corrected by hardware ECC — expected self-healing behavior"),
+    ("retry",           "a retry attempt — transient, not an unrecoverable failure"),
+    ("alignment exception", "an alignment exception logged for diagnostics — not a system fault"),
+]
+
+
 def _make_normal_cot(log_text: str, config: DatasetConfig) -> str:
-    """Generate log-specific normal CoT analysis by extracting component and level."""
+    """Generate log-specific normal CoT analysis.
+
+    If the content contains fault-looking keywords at INFO/WARNING level,
+    explicitly explain why the event is still Normal (e.g. ECC correction, retry).
+    """
     import re
     m = re.match(r'\[([^\]]+)\]\s*\[([^\]]+)\]', log_text)
-    if m:
-        component, level = m.group(1).strip(), m.group(2).strip()
+    if not m:
+        return config.normal_cot_analysis
+
+    component, level = m.group(1).strip(), m.group(2).strip()
+    content_lower = log_text.lower()
+
+    # Check if log contains fault-looking keywords that are actually self-healing
+    healing_note = ""
+    for pattern, explanation in _SELF_HEALING_PATTERNS:
+        if pattern in content_lower:
+            healing_note = (
+                f"- Content contains '{pattern}' — this is {explanation}.\n"
+                f"- At {level} severity this is a routine operational event, not an actionable fault."
+            )
+            break
+
+    if healing_note:
         return (
-            f"- Component: {component}, severity: {level} — both within expected operational range.\n"
-            "- Content matches a routine informational or status message.\n"
-            "- No error keywords, exception traces, hardware fault indicators, or "
-            "unexpected state transitions are present.\n"
-            "- This pattern is consistent with normal system operation."
+            f"- Component: {component}, severity: {level} — within expected operational range.\n"
+            + healing_note + "\n"
+            "- This pattern is consistent with normal self-healing system behavior."
         )
-    return config.normal_cot_analysis
+
+    return (
+        f"- Component: {component}, severity: {level} — both within expected operational range.\n"
+        "- Content matches a routine informational or status message.\n"
+        "- No error keywords, exception traces, hardware fault indicators, or "
+        "unexpected state transitions are present.\n"
+        "- This pattern is consistent with normal system operation."
+    )
 
 
 def format_anomalous_example(ex: Dict, idx: int) -> str:
@@ -346,25 +378,25 @@ def build_llm_system_prompt(
         "whether each entry represents a Normal system event or an Anomalous condition.\n\n"
         "Each log entry is formatted as:\n"
         f"  {config.log_format_description}\n\n"
-        "For each log entry you will:\n"
-        f"1. Observe {config.log_observation_hint}.\n"
-        "2. Identify any error keywords, fault indicators, or unexpected patterns.\n"
-        "3. Reason step-by-step (Chain-of-Thought) before deciding.\n"
-        "4. Output ONLY valid JSON — nothing else.\n\n"
-        "   For Normal entries use exactly:\n"
-        '     {"label": "Normal", "confidence": <float 0.0-1.0>}\n\n'
-        "   For Anomalous entries use exactly:\n"
-        '     {"label": "Anomalous", "confidence": <float 0.0-1.0>,\n'
-        '      "root_cause":    "<one sentence: failure hypothesis + risk/system impact>",\n'
-        '      "sre_action":    "<one sentence: SRE-oriented next action for resolution>",\n'
-        '      "devops_action": "<one sentence: DevOps-oriented next action for resolution>"}\n\n'
-        "   confidence = P(Anomalous): 0.0 = certainly Normal, 1.0 = certainly Anomalous.\n\n"
-        "CRITICAL: For each log entry, derive root_cause, sre_action, and devops_action "
-        "directly from the specific content of THAT entry — the relevant fields and context "
-        "visible in the log text. "
-        "Do NOT copy or adapt the example explanations below.\n\n"
-        "NOTE: Classify as Anomalous ONLY for definitive ERROR/FATAL-level hardware faults "
-        "or job failures. When uncertain, classify as Normal.\n\n"
+        "For each log entry, reason step-by-step before deciding:\n\n"
+        f"  Step 1 — Identify:  Read the [COMPONENT], [LEVEL], content, and Drain template.\n"
+        "  Step 2 — Interpret: What operation or event does the content describe?\n"
+        "  Step 3 — Assess severity:\n"
+        "             • INFO or WARNING with routine content → likely Normal.\n"
+        "             • ERROR or FATAL with failure content → likely Anomalous.\n"
+        "             • Fault keywords (error, failed, lost, killed, interrupt) at INFO level\n"
+        "               may still be Normal if the event was automatically corrected or is\n"
+        "               an expected self-healing operation (e.g. ECC correction, retry).\n"
+        "  Step 4 — Decide and output ONLY valid JSON:\n\n"
+        "     Normal   → {\"label\": \"Normal\", \"confidence\": <float 0.0-1.0>}\n\n"
+        "     Anomalous→ {\"label\": \"Anomalous\", \"confidence\": <float 0.0-1.0>,\n"
+        "                 \"root_cause\":    \"<failure hypothesis + risk/system impact>\",\n"
+        "                 \"sre_action\":    \"<SRE on-call immediate action, naming specific tool or procedure>\",\n"
+        "                 \"devops_action\": \"<DevOps infrastructure action, naming specific operation or resource>\"}\n\n"
+        "  confidence = P(Anomalous): 0.0 = certainly Normal, 1.0 = certainly Anomalous.\n\n"
+        "  For Anomalous entries: derive root_cause, sre_action, and devops_action from the\n"
+        "  specific content of THAT log — do NOT copy or adapt the examples below.\n\n"
+        "  When uncertain, classify as Normal.\n\n"
         f"--- FEW-SHOT EXAMPLES (NORMAL — drawn from real {config.name} logs) ---\n\n"
         + normal_examples
         + "\n\n--- FEW-SHOT EXAMPLES (ANOMALOUS — illustrate required output structure) ---\n\n"
