@@ -347,6 +347,11 @@ def build_llm_system_prompt(
         "directly from the specific content of THAT entry — the relevant fields and context "
         "visible in the log text. "
         "Do NOT copy or adapt the example explanations below.\n\n"
+        "CLASSIFICATION RULE: Only label a log as Anomalous when it contains EXPLICIT fault indicators:\n"
+        "  • ERROR or FATAL severity level, AND failure content (hardware fault, crash, exception,\n"
+        "    signal kill, lost connection, test failure, or communication error).\n"
+        "  • If the severity is INFO or WARNING with routine operational content → Normal.\n"
+        "  • When uncertain, classify as Normal — false negatives are preferable to false alarms.\n\n"
         f"--- FEW-SHOT EXAMPLES (NORMAL — drawn from real {config.name} logs) ---\n\n"
         + normal_examples
         + "\n\n--- FEW-SHOT EXAMPLES (ANOMALOUS — illustrate required output structure) ---\n\n"

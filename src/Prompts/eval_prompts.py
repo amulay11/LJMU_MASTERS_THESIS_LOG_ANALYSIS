@@ -108,15 +108,27 @@ def build_answer_relevance_prompt(
 # Used by: E02, E03 (identical sre_action field in both schemas)
 # =============================================================================
 
-def build_sre_appropriateness_prompt(sre_action: str) -> str:
+def build_sre_appropriateness_prompt(sre_action: str, log_text: str = "") -> str:
+    log_line = f"Log entry:\n{log_text}\n\n" if log_text else ""
     return (
-        f"SRE next action: {sre_action or '(empty)'}\n\n"
-        "Score ROLE APPROPRIATENESS for a Site Reliability Engineer (SRE) (0-1): "
-        "Is this action technically precise, incident-focused, and immediately actionable "
-        "for an SRE? Consider whether it addresses monitoring, alerting, node isolation, "
-        "or escalation in line with SRE on-call practices. "
-        "1.0 = highly appropriate, specific, and actionable for an SRE, "
-        "0.0 = vague, irrelevant, or not suited to the SRE role."
+        log_line
+        + f"SRE next action: {sre_action or '(empty)'}\n\n"
+        "Score ROLE APPROPRIATENESS for a Site Reliability Engineer (SRE) (0-1).\n\n"
+        "A HIGH-QUALITY SRE action MUST:\n"
+        "  • Reference the specific component or failure type visible in the log.\n"
+        "  • Name a concrete tool, command, or procedure (e.g. 'check IPMI/BMC logs', "
+        "'drain node via scheduler', 'page on-call', 'isolate the affected node').\n"
+        "  • Be immediately executable by an on-call SRE — no further interpretation needed.\n\n"
+        "PENALISE heavily:\n"
+        "  • Generic phrases: 'monitor the system', 'check logs', 'investigate further', "
+        "'contact support', 'review the situation', 'notify the team'.\n"
+        "  • Actions that do not reference the specific fault or component visible in the log.\n"
+        "  • DevOps/infra tasks misassigned to SRE (scheduler reconfiguration, hardware replacement).\n\n"
+        "Scoring:\n"
+        "  1.0 = component-specific + concrete tool/procedure + immediately actionable\n"
+        "  0.7 = correct domain but missing one of: specificity, tool name, or component reference\n"
+        "  0.4 = partially relevant but generic or missing key action detail\n"
+        "  0.0 = generic template, wrong role, or empty"
     )
 
 # =============================================================================
@@ -125,15 +137,27 @@ def build_sre_appropriateness_prompt(sre_action: str) -> str:
 # Used by: E02, E03 (identical devops_action field in both schemas)
 # =============================================================================
 
-def build_devops_appropriateness_prompt(devops_action: str) -> str:
+def build_devops_appropriateness_prompt(devops_action: str, log_text: str = "") -> str:
+    log_line = f"Log entry:\n{log_text}\n\n" if log_text else ""
     return (
-        f"DevOps next action: {devops_action or '(empty)'}\n\n"
-        "Score ROLE APPROPRIATENESS for a DevOps Engineer (0-1): "
-        "Is this action operationally clear and immediately actionable for a DevOps engineer? "
-        "Consider whether it addresses infrastructure management, scheduler operations, "
-        "hardware ticketing, or deployment-level remediation in line with DevOps practices. "
-        "1.0 = highly appropriate, specific, and actionable for a DevOps engineer, "
-        "0.0 = vague, irrelevant, or not suited to the DevOps role."
+        log_line
+        + f"DevOps next action: {devops_action or '(empty)'}\n\n"
+        "Score ROLE APPROPRIATENESS for a DevOps Engineer (0-1).\n\n"
+        "A HIGH-QUALITY DevOps action MUST:\n"
+        "  • Address infrastructure, scheduler, or deployment-level remediation — NOT monitoring or alerting.\n"
+        "  • Reference the specific resource, node, or service impacted (visible in the log).\n"
+        "  • Name a concrete operation (e.g. 'drain and cordon node', 'open hardware replacement ticket', "
+        "'update scheduler exclusion list', 're-queue affected jobs with adjusted memory limits').\n\n"
+        "PENALISE heavily:\n"
+        "  • Generic phrases: 'review the logs', 'notify the team', 'monitor infrastructure', "
+        "'check the system', 'update documentation', 'investigate further'.\n"
+        "  • SRE-level actions (paging on-call, setting alerts, incident management) misassigned to DevOps.\n"
+        "  • Actions that do not address the specific failure type visible in the log.\n\n"
+        "Scoring:\n"
+        "  1.0 = infrastructure-specific + concrete operation + references the impacted resource\n"
+        "  0.7 = correct domain but missing one of: specificity, operation name, or resource reference\n"
+        "  0.4 = partially relevant but generic or missing key detail\n"
+        "  0.0 = generic template, SRE-level action, wrong role, or empty"
     )
 
 # =============================================================================
