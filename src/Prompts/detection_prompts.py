@@ -1,13 +1,28 @@
 """
-Detection and inference prompts for BGL log anomaly experiments.
+Dataset-agnostic detection and inference prompts.
 Import this module in all experiment notebooks for standardised detection prompts.
 
-LLM Few-Shot CoT approach (E02):
-    COT_NORMAL_TEMPLATE, HANDCRAFTED_ANOMALOUS_EXAMPLES,
-    format_anomalous_example, build_llm_system_prompt, build_llm_user_prompt
+Usage
+-----
+1. Pick (or define) a DatasetConfig for your dataset:
+       from detection_prompts import BGL_CONFIG        # or HDFS_CONFIG, etc.
 
-RAG context-augmented approach (E03+):
-    RAG_SYSTEM_PROMPT, format_retrieved_context, build_rag_user_prompt
+2. Build approach-specific prompts by passing the config:
+       LLM  → build_llm_system_prompt(few_shot_normal, few_shot_anomalous, config)
+       RAG  → build_rag_system_prompt(config)            # returns the system prompt string
+
+3. All other helpers (build_llm_user_prompt, build_rag_user_prompt,
+   format_retrieved_context) are fully generic and need no config.
+
+DatasetConfig fields
+--------------------
+  name                  Short identifier, e.g. "BGL", "HDFS"
+  domain                Full descriptive name used in the LLM persona
+  system_knowledge      Domain expertise blurb (failures, events, procedures)
+  log_format_description  One-line description of the log entry format
+  log_observation_hint  What to observe in CoT step 1 (format-specific features)
+  anomaly_examples      Handcrafted few-shot anomalous examples (List[Dict])
+  normal_cot_analysis   Analysis bullet lines for the normal CoT template
 
 Output schema note
 ------------------
@@ -19,7 +34,7 @@ LLM schema (E02):
   Normal   → {label, confidence}
   Anomalous→ {label, confidence, root_cause, sre_action, devops_action}
 
-RAG schema (E03):
+RAG schema (E03+):
   Normal   → {label, confidence}
   Anomalous→ {label, confidence, anomaly_explanation,
                rca:{summary, detailed_description, confidence_level,
@@ -29,31 +44,45 @@ RAG schema (E03):
 """
 
 import json
+from dataclasses import dataclass, field
 from typing import Dict, List
 
 # =============================================================================
-# LLM APPROACH: FEW-SHOT CHAIN-OF-THOUGHT (E02)
+# DATASET CONFIGURATION
 # =============================================================================
 
-COT_NORMAL_TEMPLATE = """\
-Log: {log_text}
-Analysis:
-- Component and severity level are within expected operational range.
-- Content matches a routine informational or status message.
-- No error keywords, exception traces, hardware fault indicators, or \
-unexpected state transitions are present.
-- This pattern is consistent with normal system operation.
-Decision: {{"label": "Normal", "confidence": 0.05}}"""
+@dataclass
+class DatasetConfig:
+    """
+    Dataset-specific variables plugged into the generic prompt templates.
+    Create one instance per dataset and pass it to the prompt builder functions.
+    """
+    name: str
+    domain: str
+    system_knowledge: str
+    log_format_description: str
+    log_observation_hint: str
+    anomaly_examples: List[Dict]
+    normal_cot_analysis: str = (
+        "- Component and severity level are within expected operational range.\n"
+        "- Content matches a routine informational or status message.\n"
+        "- No error keywords, exception traces, hardware fault indicators, or "
+        "unexpected state transitions are present.\n"
+        "- This pattern is consistent with normal system operation."
+    )
 
-# Handcrafted anomalous examples — each log text is matched to an explanation
-# that specifically reflects THAT entry's component, fault type, and risk.
-# Fault types are deliberately diverse (machine check, I/O daemon, DDR test,
-# MPI kill, torus link) so the model learns to derive explanations from log
-# content rather than copying a template.
-# These examples are intentionally different from typical BGL test anomalies
-# (data TLB error, data storage interrupt, rts panic, Lustre mount failure,
-#  ciod connection reset/timeout) to prevent template-anchoring.
-HANDCRAFTED_ANOMALOUS_EXAMPLES: List[Dict] = [
+
+# =============================================================================
+# BGL DATASET CONFIGURATION
+# =============================================================================
+# Anomalous examples: fault types are deliberately diverse (machine check,
+# I/O daemon loss, DDR test failure, MPI SIGKILL, torus link error) so the
+# model learns to derive explanations from log content rather than templates.
+# Examples are intentionally different from typical BGL test anomalies (data
+# TLB error, data storage interrupt, rts panic, Lustre mount failure, ciod
+# connection reset/timeout) to prevent template-anchoring.
+
+_BGL_ANOMALOUS_EXAMPLES: List[Dict] = [
     {
         "log_text": (
             "[RAS] [FATAL] machine check interrupt | Template: machine check interrupt"
@@ -187,6 +216,65 @@ HANDCRAFTED_ANOMALOUS_EXAMPLES: List[Dict] = [
     },
 ]
 
+BGL_CONFIG = DatasetConfig(
+    name="BGL",
+    domain="BGL (Blue Gene/L) supercomputer",
+    system_knowledge=(
+        "HPC system failures, RAS hardware events, and operational response procedures"
+    ),
+    log_format_description="[COMPONENT] [LEVEL] <content> | Template: <drain_pattern>",
+    log_observation_hint="the component, severity level, content, and Drain template",
+    anomaly_examples=_BGL_ANOMALOUS_EXAMPLES,
+    normal_cot_analysis=(
+        "- Component and severity level are within expected operational range.\n"
+        "- Content matches a routine informational or status message.\n"
+        "- No error keywords, exception traces, hardware fault indicators, or "
+        "unexpected state transitions are present.\n"
+        "- This pattern is consistent with normal system operation."
+    ),
+)
+
+
+# =============================================================================
+# HDFS DATASET CONFIGURATION
+# =============================================================================
+# anomaly_examples left empty — populate when HDFS LLM/RAG experiments are built.
+
+HDFS_CONFIG = DatasetConfig(
+    name="HDFS",
+    domain="HDFS (Hadoop Distributed File System)",
+    system_knowledge=(
+        "distributed storage failures, DataNode/NameNode operations, "
+        "block replication events, and Hadoop cluster fault recovery"
+    ),
+    log_format_description=(
+        "HDFS Block Trace | <event_sequence>  "
+        "(each token is a Drain event-template ID, e.g. E5 -> E22 -> E11)"
+    ),
+    log_observation_hint=(
+        "the event sequence, trace length, and presence of error or failure event IDs"
+    ),
+    anomaly_examples=[],   # to be populated when HDFS experiments are added
+    normal_cot_analysis=(
+        "- The block event sequence follows a normal read/write/replication pattern.\n"
+        "- No error or failure event IDs are present in the trace.\n"
+        "- The sequence length and event ordering are consistent with routine operations.\n"
+        "- This pattern is consistent with normal HDFS block lifecycle."
+    ),
+)
+
+
+# =============================================================================
+# LLM APPROACH: FEW-SHOT CHAIN-OF-THOUGHT (E02)
+# =============================================================================
+
+# Generic CoT template — {analysis} is filled from DatasetConfig.normal_cot_analysis
+COT_NORMAL_TEMPLATE = """\
+Log: {log_text}
+Analysis:
+{analysis}
+Decision: {{"label": "Normal", "confidence": 0.05}}"""
+
 
 def format_anomalous_example(ex: Dict, idx: int) -> str:
     """Format one handcrafted anomalous example for inclusion in the LLM system prompt."""
@@ -208,34 +296,42 @@ def format_anomalous_example(ex: Dict, idx: int) -> str:
     )
 
 
-def build_llm_system_prompt(few_shot_normal, few_shot_anomalous) -> str:
+def build_llm_system_prompt(
+    few_shot_normal,
+    few_shot_anomalous,
+    config: DatasetConfig,
+) -> str:
     """
     Build the few-shot CoT system prompt for the LLM detection approach (E02).
 
     Parameters
     ----------
-    few_shot_normal   : pd.DataFrame — real BGL normal entries (used directly in prompt)
-    few_shot_anomalous: pd.DataFrame — real BGL anomaly entries (excluded from test set;
-                        the prompt uses HANDCRAFTED_ANOMALOUS_EXAMPLES for output consistency)
+    few_shot_normal   : pd.DataFrame — real log normal entries (used directly in prompt)
+    few_shot_anomalous: pd.DataFrame — real log anomaly entries (excluded from test set;
+                        the prompt uses config.anomaly_examples for output consistency)
+    config            : DatasetConfig — dataset-specific variables
     """
     normal_examples = "\n\n".join(
         f"Example {i + 1} (Normal):\n"
-        + COT_NORMAL_TEMPLATE.format(log_text=row["log_text"])
+        + COT_NORMAL_TEMPLATE.format(
+            log_text=row["log_text"],
+            analysis=config.normal_cot_analysis,
+        )
         for i, (_, row) in enumerate(few_shot_normal.iterrows())
     )
     anomalous_examples = "\n\n".join(
         format_anomalous_example(ex, i + 1)
-        for i, ex in enumerate(HANDCRAFTED_ANOMALOUS_EXAMPLES)
+        for i, ex in enumerate(config.anomaly_examples)
     )
     return (
         "You are a senior Site Reliability Engineer (SRE) specialising in "
-        "supercomputer and HPC cluster log analysis. "
-        "You will receive BGL (Blue Gene/L) system log entries and must determine "
+        f"{config.domain} log analysis. "
+        f"You will receive {config.name} system log entries and must determine "
         "whether each entry represents a Normal system event or an Anomalous condition.\n\n"
         "Each log entry is formatted as:\n"
-        "  [COMPONENT] [LEVEL] <content> | Template: <drain_pattern>\n\n"
+        f"  {config.log_format_description}\n\n"
         "For each log entry you will:\n"
-        "1. Observe the component, severity level, content, and Drain template.\n"
+        f"1. Observe {config.log_observation_hint}.\n"
         "2. Identify any error keywords, fault indicators, or unexpected patterns.\n"
         "3. Reason step-by-step (Chain-of-Thought) before deciding.\n"
         "4. Output ONLY valid JSON — nothing else.\n\n"
@@ -248,10 +344,10 @@ def build_llm_system_prompt(few_shot_normal, few_shot_anomalous) -> str:
         '      "devops_action": "<one sentence: DevOps-oriented next action for resolution>"}\n\n'
         "   confidence = P(Anomalous): 0.0 = certainly Normal, 1.0 = certainly Anomalous.\n\n"
         "CRITICAL: For each log entry, derive root_cause, sre_action, and devops_action "
-        "directly from the specific content of THAT entry — the component name, error keyword, "
-        "and context visible in the log text. "
+        "directly from the specific content of THAT entry — the relevant fields and context "
+        "visible in the log text. "
         "Do NOT copy or adapt the example explanations below.\n\n"
-        "--- FEW-SHOT EXAMPLES (NORMAL — drawn from real BGL logs) ---\n\n"
+        f"--- FEW-SHOT EXAMPLES (NORMAL — drawn from real {config.name} logs) ---\n\n"
         + normal_examples
         + "\n\n--- FEW-SHOT EXAMPLES (ANOMALOUS — illustrate required output structure) ---\n\n"
         + anomalous_examples
@@ -270,48 +366,56 @@ def build_llm_user_prompt(log_text: str) -> str:
 # RAG APPROACH: CONTEXT-AUGMENTED DETECTION (E03+)
 # =============================================================================
 
-RAG_SYSTEM_PROMPT = (
-    "You are an expert BGL (Blue Gene/L) supercomputer log analyst with deep knowledge "
-    "of HPC system failures, RAS hardware events, and operational response procedures.\n\n"
-    "You will receive:\n"
-    "  1. A BGL log entry to classify.\n"
-    "  2. Similar historical log entries retrieved from a knowledge base "
-    "(each labeled Normal or Anomalous).\n\n"
-    "Use the retrieved context to inform your classification and analysis. "
-    "Output ONLY valid JSON — nothing else.\n\n"
-    "For Normal entries:\n"
-    '  {"label": "Normal", "confidence": <float 0.0-1.0>}\n\n'
-    "For Anomalous entries:\n"
-    '  {"label": "Anomalous", "confidence": <float 0.0-1.0>,\n'
-    '   "anomaly_explanation": "<one sentence: what makes this log anomalous>",\n'
-    '   "rca": {\n'
-    '     "summary": "<one sentence: root cause>",\n'
-    '     "detailed_description": "<2-3 sentences: mechanism, failure path, system impact>",\n'
-    '     "confidence_level": "High|Medium|Low",\n'
-    '     "confidence_reasoning": "<one sentence: why this confidence level>",\n'
-    '     "causal_chain": ["<trigger>", "<intermediate effect>", "<final impact>"],\n'
-    '     "supporting_evidence": ["<evidence item from log>", "<evidence item 2>"]\n'
-    '   },\n'
-    '   "risk_score": {\n'
-    '     "system_impact": <int 1-4>,\n'
-    '     "error_type": <int 1-4>,\n'
-    '     "cascade_potential": <int 1-4>\n'
-    '   },\n'
-    '   "remediation": {\n'
-    '     "sre_action": "<one sentence: SRE on-call immediate next action>",\n'
-    '     "devops_action": "<one sentence: DevOps engineer infrastructure next action>"\n'
-    '   }\n'
-    '  }\n\n'
-    "Risk score factors (1=low, 4=high):\n"
-    "  system_impact     : 1=minimal, 2=degraded performance, 3=partial outage, "
-    "4=full node/system failure\n"
-    "  error_type        : 1=informational, 2=warning, 3=recoverable error, "
-    "4=fatal or hardware fault\n"
-    "  cascade_potential : 1=isolated to one process, 2=affects nearby nodes, "
-    "3=service-level impact, 4=system-wide cascade\n\n"
-    "Risk Score is computed by the system — do not calculate it yourself:\n"
-    "  total = (system_impact x 0.4) + (error_type x 0.3) + (cascade_potential x 0.2)"
-)
+def build_rag_system_prompt(config: DatasetConfig) -> str:
+    """
+    Build the RAG system prompt for the context-augmented detection approach (E03+).
+
+    Parameters
+    ----------
+    config : DatasetConfig — dataset-specific variables
+    """
+    return (
+        f"You are an expert {config.domain} log analyst with deep knowledge "
+        f"of {config.system_knowledge}.\n\n"
+        "You will receive:\n"
+        f"  1. A {config.name} log entry to classify.\n"
+        "  2. Similar historical log entries retrieved from a knowledge base "
+        "(each labeled Normal or Anomalous).\n\n"
+        "Use the retrieved context to inform your classification and analysis. "
+        "Output ONLY valid JSON — nothing else.\n\n"
+        "For Normal entries:\n"
+        '  {"label": "Normal", "confidence": <float 0.0-1.0>}\n\n'
+        "For Anomalous entries:\n"
+        '  {"label": "Anomalous", "confidence": <float 0.0-1.0>,\n'
+        '   "anomaly_explanation": "<one sentence: what makes this log anomalous>",\n'
+        '   "rca": {\n'
+        '     "summary": "<one sentence: root cause>",\n'
+        '     "detailed_description": "<2-3 sentences: mechanism, failure path, system impact>",\n'
+        '     "confidence_level": "High|Medium|Low",\n'
+        '     "confidence_reasoning": "<one sentence: why this confidence level>",\n'
+        '     "causal_chain": ["<trigger>", "<intermediate effect>", "<final impact>"],\n'
+        '     "supporting_evidence": ["<evidence item from log>", "<evidence item 2>"]\n'
+        '   },\n'
+        '   "risk_score": {\n'
+        '     "system_impact": <int 1-4>,\n'
+        '     "error_type": <int 1-4>,\n'
+        '     "cascade_potential": <int 1-4>\n'
+        '   },\n'
+        '   "remediation": {\n'
+        '     "sre_action": "<one sentence: SRE on-call immediate next action>",\n'
+        '     "devops_action": "<one sentence: DevOps engineer infrastructure next action>"\n'
+        '   }\n'
+        '  }\n\n'
+        "Risk score factors (1=low, 4=high):\n"
+        "  system_impact     : 1=minimal, 2=degraded performance, 3=partial outage, "
+        "4=full node/system failure\n"
+        "  error_type        : 1=informational, 2=warning, 3=recoverable error, "
+        "4=fatal or hardware fault\n"
+        "  cascade_potential : 1=isolated to one process, 2=affects nearby nodes, "
+        "3=service-level impact, 4=system-wide cascade\n\n"
+        "Risk Score is computed by the system — do not calculate it yourself:\n"
+        "  total = (system_impact x 0.4) + (error_type x 0.3) + (cascade_potential x 0.2)"
+    )
 
 
 def format_retrieved_context(retrieved: List[Dict]) -> str:
