@@ -363,8 +363,8 @@ def build_llm_system_prompt(
         "directly from the specific content of THAT entry — the relevant fields and context "
         "visible in the log text. "
         "Do NOT copy or adapt the example explanations below.\n\n"
-        "NOTE: ~93% of BGL logs are Normal. Classify as Anomalous ONLY for definitive "
-        "ERROR/FATAL-level hardware faults or job failures. When uncertain, classify as Normal.\n\n"
+        "NOTE: Classify as Anomalous ONLY for definitive ERROR/FATAL-level hardware faults "
+        "or job failures. When uncertain, classify as Normal.\n\n"
         f"--- FEW-SHOT EXAMPLES (NORMAL — drawn from real {config.name} logs) ---\n\n"
         + normal_examples
         + "\n\n--- FEW-SHOT EXAMPLES (ANOMALOUS — illustrate required output structure) ---\n\n"
