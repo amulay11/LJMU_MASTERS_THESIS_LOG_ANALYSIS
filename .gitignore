@@ -24,6 +24,7 @@ src/KnowledgeBase/qdrant_store/
 
 # ── Archive notebooks (superseded experiments) ───────────────────────────────
 src/ML Based/archive/
+src/LLM/E02_BGL_LLM_Baseline - Orig.ipynb
 
 # ── OS & editor artefacts ────────────────────────────────────────────────────
 .DS_Store
