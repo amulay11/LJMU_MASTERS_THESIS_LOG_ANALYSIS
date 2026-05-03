@@ -182,7 +182,26 @@ Output schema for anomalies:
 
 ### Prompting — Vanilla RAG (E03)
 
-The RAG approach replaces the in-prompt few-shot examples with **retrieved context from the persistent Qdrant KB**. For each test log, the top-5 most similar KB entries (by cosine similarity) are retrieved and injected into the user-turn prompt alongside the log to classify.
+The RAG approach replaces the in-prompt few-shot examples with **retrieved context from the persistent Qdrant KB**. For each test log, three separate retrieval queries are issued and injected into the user-turn prompt in clearly labelled sections.
+
+#### Retrieval strategy
+
+Three independent Qdrant queries are issued per log entry, each targeting a different knowledge type:
+
+| Section | Collections queried | K per collection | Purpose |
+|---|---|---|---|
+| `[A]` Log examples | `bgl_logs` | 5 | Nearest-neighbour log hits with ground-truth labels — used for label-based retrieval metrics (MRR, Hit Rate, Context Precision) |
+| `[B]` System knowledge | `bgl_architecture`, `bgl_severity`, `bgl_rca` | 2 | Architecture reference, severity taxonomy, and RCA examples — provides domain-specific evidence for RCA and risk scoring |
+| `[C]` Role scope reference | `role_sre`, `role_devops` | 2 | SRE and DevOps reference guides — used **only** to understand each role's scope of action; model is explicitly instructed not to copy verbatim |
+
+The user-turn prompt is structured as three labelled blocks (A / B / C) so the model can distinguish log evidence from role process knowledge. Section `[C]` carries the explicit label: *"do not copy verbatim — derive specific actions from the log evidence above"*.
+
+#### Anti-parroting constraint
+
+Role guide content (e.g. "Review and prune alerts quarterly", "Deploy a canary to 1% of nodes") is generic process knowledge, not log-specific guidance. When role chunks are mixed into a single undifferentiated context block, the model tends to reproduce guide phrases verbatim rather than grounding remediation steps in the observed log evidence. Two complementary mitigations are applied:
+
+1. **Structural separation** — role guide hits are placed in a distinct `[C]` section with an explicit "do not copy verbatim" label, keeping them visually and semantically separate from log evidence (`[A]`) and system knowledge (`[B]`).
+2. **System prompt constraint** — `build_rag_system_prompt()` in `src/Prompts/detection_prompts.py` includes an explicit instruction: *"Use the Role scope reference only to understand the appropriate level and type of action for each role. Generate steps that are specific to this log entry — grounded in the log evidence and system knowledge. Do not reproduce generic process phrases from the role guide verbatim."*
 
 The system prompt instructs the model to use retrieved context to inform classification and produce a richer structured output:
 
