@@ -22,6 +22,9 @@ Datasets/HDFS/Full_HDFS_v1/preprocessed/
 # ── Qdrant vector store (built locally, not committed) ───────────────────────
 src/KnowledgeBase/qdrant_store/
 
+# ── Archive notebooks (superseded experiments) ───────────────────────────────
+src/ML Based/archive/
+
 # ── OS & editor artefacts ────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
