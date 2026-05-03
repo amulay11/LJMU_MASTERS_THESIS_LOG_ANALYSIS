@@ -101,7 +101,8 @@ def load_rca_json(path: Path) -> List[Dict]:
 # =============================================================================
 
 def _is_heading(para) -> bool:
-    return para.style.name.startswith("Heading") or para.style.name == "Title"
+    style_name = para.style.name if para.style else ""
+    return style_name.startswith("Heading") or style_name == "Title"
 
 
 def extract_docx_chunks(path: Path, max_chars: int = MAX_CHUNK_CHARS) -> List[Dict]:
