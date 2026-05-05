@@ -71,10 +71,18 @@ EMBED_BATCH_SIZE = 64
 RANDOM_SEED      = 42
 
 # Test-set caps (must match notebook values to exclude the correct logs)
-TEST_NORMAL_CAP    = 215
+TEST_NORMAL_CAP    = 200
 TEST_ANOMALY_CAP   = 15
 N_FEW_SHOT_NORMAL  = 5
 N_FEW_SHOT_ANOM    = 5
+
+# KB log optimisation: deduplicate by template, then cap normals at this
+# multiple of anomalous entries to reduce redundancy and class imbalance.
+BGL_KB_NORMAL_RATIO  = 2
+
+# HDFS traces have no shared template structure — cap each class directly.
+HDFS_KB_ANOMALY_CAP = 100
+HDFS_KB_NORMAL_CAP  = 200
 
 MAX_CHUNK_CHARS = 600   # target chunk size for docx paragraphs
 
@@ -288,6 +296,24 @@ def load_bgl_logs() -> List[Dict]:
         df_anom.iloc[test_anom_end:],        # anomalies beyond test cap
     ], ignore_index=True)
 
+    raw_norm, raw_anom = len(kb_norm), len(kb_anom)
+
+    # Step 1 — Template-level deduplication.
+    # Rows are already shuffled, so .first() picks a random representative
+    # per unique EventTemplate, eliminating near-duplicate vectors.
+    kb_norm = kb_norm.groupby("EventTemplate", sort=False).first().reset_index()
+    kb_anom = kb_anom.groupby("EventTemplate", sort=False).first().reset_index()
+
+    # Step 2 — Balance classes.
+    # Cap normals at BGL_KB_NORMAL_RATIO × anomalies so anomaly signal
+    # is not drowned out during retrieval.
+    max_norm = min(len(kb_norm), BGL_KB_NORMAL_RATIO * len(kb_anom))
+    kb_norm = kb_norm.sample(n=max_norm, random_state=RANDOM_SEED)
+
+    print(f"  BGL KB (before dedup/balance): Normal={raw_norm}, Anomalous={raw_anom}")
+    print(f"  BGL KB (after  dedup/balance): Normal={len(kb_norm)}, Anomalous={len(kb_anom)}  "
+          f"(ratio {BGL_KB_NORMAL_RATIO}:1, 1 rep/template)")
+
     docs = []
     for _, row in kb_norm.iterrows():
         docs.append({
@@ -349,6 +375,16 @@ def load_hdfs_logs() -> List[Dict]:
 
     kb_norm = pd.concat([df_norm.iloc[:N_FEW_SHOT_NORMAL],  df_norm.iloc[test_norm_end:]], ignore_index=True)
     kb_anom = pd.concat([df_anom.iloc[:N_FEW_SHOT_ANOM],    df_anom.iloc[test_anom_end:]], ignore_index=True)
+
+    raw_norm, raw_anom = len(kb_norm), len(kb_anom)
+
+    # Cap HDFS classes — traces are unique sequences so template-dedup doesn't
+    # apply; a random sample keeps the KB manageable without losing diversity.
+    kb_norm = kb_norm.sample(n=min(HDFS_KB_NORMAL_CAP,  len(kb_norm)), random_state=RANDOM_SEED)
+    kb_anom = kb_anom.sample(n=min(HDFS_KB_ANOMALY_CAP, len(kb_anom)), random_state=RANDOM_SEED)
+
+    print(f"  HDFS KB (before cap): Normal={raw_norm}, Anomalous={raw_anom}")
+    print(f"  HDFS KB (after  cap): Normal={len(kb_norm)}, Anomalous={len(kb_anom)}")
 
     docs = []
     for _, row in kb_norm.iterrows():
@@ -433,7 +469,7 @@ def upsert_collection(
     for i in range(0, len(points), batch_size):
         client.upsert(collection_name=collection, points=points[i : i + batch_size])
 
-    print(f"  Upserted {len(points):>5} docs → {collection}")
+    print(f"  Upserted {len(points):>5} docs -> {collection}")
 
 
 # =============================================================================
