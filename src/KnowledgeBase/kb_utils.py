@@ -54,6 +54,10 @@ from sentence_transformers import SentenceTransformer
 EMBED_MODEL = "BAAI/bge-base-en-v1.5"
 QDRANT_PATH = Path(__file__).resolve().parent / "qdrant_store"
 
+# Module-level singleton — prevents "already accessed by another instance"
+# errors when a notebook cell is re-run inside the same kernel.
+_QDRANT_SINGLETONS: dict = {}
+
 COLLECTION_NAMES = {
     "bgl_logs":          "bgl_logs",
     "bgl_architecture":  "bgl_architecture",
@@ -89,7 +93,21 @@ class KBClient:
                 f"Qdrant store not found at {path}. "
                 "Run src/KnowledgeBase/build_kb.py first."
             )
-        self._client = QdrantClient(path=str(path))
+        key = str(path)
+        if key not in _QDRANT_SINGLETONS:
+            try:
+                _QDRANT_SINGLETONS[key] = QdrantClient(path=key)
+            except Exception as exc:
+                if "AlreadyLocked" in type(exc).__name__ or (
+                    "Permission" in str(exc) or "lock" in str(exc).lower()
+                ):
+                    raise RuntimeError(
+                        "Qdrant storage is locked by another kernel.\n"
+                        "Shut down all other notebook kernels that use KBClient "
+                        "(e.g. E03, E04) and re-run this cell."
+                    ) from None
+                raise
+        self._client = _QDRANT_SINGLETONS[key]
         self._model  = None   # lazy-loaded on first query
 
     def _get_model(self) -> SentenceTransformer:
@@ -138,16 +156,16 @@ class KBClient:
 
         qdrant_filter = Filter(must=must_conditions) if must_conditions else None
 
-        hits = self._client.search(
+        result = self._client.query_points(
             collection_name=collection,
-            query_vector=self._embed(text),
+            query=self._embed(text),
             limit=top_k,
             query_filter=qdrant_filter,
             with_payload=True,
         )
         return [
             {**hit.payload, "score": round(hit.score, 4)}
-            for hit in hits
+            for hit in result.points
         ]
 
     # ── BGL CONVENIENCE METHODS ───────────────────────────────────────────────
@@ -233,6 +251,17 @@ class KBClient:
         return results
 
     # ── UTILITY ───────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def close_all() -> None:
+        """Close every singleton QdrantClient and release their file locks.
+        Call this before running build_kb.py from inside the same kernel."""
+        for key, client in list(_QDRANT_SINGLETONS.items()):
+            try:
+                client.close()
+            except Exception:
+                pass
+        _QDRANT_SINGLETONS.clear()
 
     def collection_stats(self) -> None:
         """Print document counts for all collections."""
