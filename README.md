@@ -134,19 +134,22 @@ The `KBClient` class (`kb_utils.py`) provides typed query methods — `query_bgl
 
 ---
 
-## ML Models Tested
+## Experiments for Log Analysis using ML and RAG
 
-Three unsupervised anomaly detection models are evaluated on BGL logs (`src/ML Based/`). All models operate in a **one-class** setting — trained only on normal logs and applied to a held-out test set containing both normal and anomalous entries.
+All experiments operate on the **BGL dataset** using the same held-out test set (200 normal + 15 anomalous logs) to ensure comparability across approaches. ML models use a one-class unsupervised setting; LLM and RAG experiments use `llama-3.1-8b-instant` for generation and `qwen/qwen3-32b` as the LLM-as-judge evaluator.
 
-| Notebook | Model | Approach |
-|---|---|---|
-| `E01_A_BGL_DeepSVDD_Pipeline.ipynb` | Deep SVDD (Deep Support Vector Data Description) | Neural network learns a compact hypersphere around normal embeddings; anomalies fall outside it |
-| `E01_B_BGL_IsolationForest_Pipeline.ipynb` | Isolation Forest | Ensemble of random trees; anomalies are isolated with fewer splits |
-| `E01_C_BGL_OneClassSVM_Pipeline.ipynb` | One-Class SVM | Kernel-based boundary fitted to the normal distribution in feature space |
-
-**Input features:** Log lines are converted to TF-IDF vectors or dense embeddings (model-dependent) before training.
-
-**Evaluation metrics:** Accuracy, Precision, Recall, F1-Score, False Positive Rate (FPR), False Negative Rate (FNR), AUC-ROC. Results are reported on the same held-out test set used by the LLM and RAG experiments.
+| # | Title (Model / Approach) | Short Description | Notebook |
+|---|---|---|---|
+| E01-A | Deep SVDD — BGL | One-class neural network that learns a compact hypersphere around normal log embeddings; anomalies are points that fall outside the boundary | [E01_A_BGL_DeepSVDD_Pipeline.ipynb](src/ML%20Based/E01_A_BGL_DeepSVDD_Pipeline.ipynb) |
+| E01-B | Isolation Forest — BGL | Unsupervised ensemble that isolates anomalies by randomly partitioning feature space; anomalies require fewer splits to isolate than normal points | [E01_B_BGL_IsolationForest_Pipeline.ipynb](src/ML%20Based/E01_B_BGL_IsolationForest_Pipeline.ipynb) |
+| E01-C | One-Class SVM — BGL | Kernel-based decision boundary fitted to the normal log distribution in TF-IDF feature space; points outside the boundary are flagged as anomalous | [E01_C_BGL_OneClassSVM_Pipeline.ipynb](src/ML%20Based/E01_C_BGL_OneClassSVM_Pipeline.ipynb) |
+| E02 | LLM Baseline (Few-Shot CoT) | Few-shot Chain-of-Thought prompting with no retrieval; 5 real normal + 5 handcrafted anomalous in-context examples guide the model's reasoning and structured JSON output | [E02_BGL_LLM_Baseline.ipynb](src/LLM/E02_BGL_LLM_Baseline.ipynb) |
+| E03 | Vanilla RAG | Standard dense retrieval from Qdrant across five collections (log examples, architecture, severity, RCA, role guides) injected as a structured multi-section prompt; serves as the RAG baseline | [E03_BGL_RAG_Baseline.ipynb](src/RAG/Vanilla%20RAG/E03_BGL_RAG_Baseline.ipynb) |
+| E04 | DeepSVDD-Guided RAG | Two-stage pipeline: DeepSVDD assigns an anomaly distance score per log; the score is used to route inference between a standard RAG path and an anomaly-focused retrieval path | [E04_DeepSVDD_RAG_Pipeline.ipynb](src/RAG/Vanilla%20RAG/E04_DeepSVDD_RAG_Pipeline.ipynb) |
+| E05 | Hybrid RAG (BM25 + Dense) | Combines BM25 sparse keyword retrieval with Qdrant dense retrieval; both ranked lists are merged via Reciprocal Rank Fusion (RRF, k=60) before the top-k candidates are passed to the LLM | [E05_BGL_DIRECT_HYBRID_RAG.ipynb](src/RAG/Hybrid%20RAG/E05_BGL_DIRECT_HYBRID_RAG.ipynb) |
+| E06 | Self-Reflective RAG | Extends Vanilla RAG with an iterative self-critique loop: if model confidence falls below 0.75 the model receives its own initial response and is prompted to revise it (up to 2 reflection rounds) | [E06_BGL_DIRECT_SELF_REFLECTIVE_RAG.ipynb](src/RAG/Self%20Reflective%20RAG/E06_BGL_DIRECT_SELF_REFLECTIVE_RAG.ipynb) |
+| E07 | Graph RAG | Builds a NetworkX knowledge graph over the KB corpus using component/level co-occurrence; 1-hop graph traversal expands the query with related templates before merging with dense retrieval results | [E07_BGL_DIRECT_GRAPH_RAG.ipynb](src/RAG/Graph%20RAG/E07_BGL_DIRECT_GRAPH_RAG.ipynb) |
+| E08 | Temporal RAG | Adds time as a retrieval dimension: dense candidates are reranked by a combined score (`0.7 × semantic + 0.3 × exp(−\|Δt\|/86400)`); retrieved logs are presented to the LLM chronologically to surface evolving error patterns | [E08_BGL_DIRECT_TEMPORAL_RAG.ipynb](src/RAG/Temporal%20RAG/E08_BGL_DIRECT_TEMPORAL_RAG.ipynb) |
 
 ---
 
@@ -182,7 +185,26 @@ Output schema for anomalies:
 
 ### Prompting — Vanilla RAG (E03)
 
-The RAG approach replaces the in-prompt few-shot examples with **retrieved context from the persistent Qdrant KB**. For each test log, the top-5 most similar KB entries (by cosine similarity) are retrieved and injected into the user-turn prompt alongside the log to classify.
+The RAG approach replaces the in-prompt few-shot examples with **retrieved context from the persistent Qdrant KB**. For each test log, three separate retrieval queries are issued and injected into the user-turn prompt in clearly labelled sections.
+
+#### Retrieval strategy
+
+Three independent Qdrant queries are issued per log entry, each targeting a different knowledge type:
+
+| Section | Collections queried | K per collection | Purpose |
+|---|---|---|---|
+| `[A]` Log examples | `bgl_logs` | 5 | Nearest-neighbour log hits with ground-truth labels — used for label-based retrieval metrics (MRR, Hit Rate, Context Precision) |
+| `[B]` System knowledge | `bgl_architecture`, `bgl_severity`, `bgl_rca` | 2 | Architecture reference, severity taxonomy, and RCA examples — provides domain-specific evidence for RCA and risk scoring |
+| `[C]` Role scope reference | `role_sre`, `role_devops` | 2 | SRE and DevOps reference guides — used **only** to understand each role's scope of action; model is explicitly instructed not to copy verbatim |
+
+The user-turn prompt is structured as three labelled blocks (A / B / C) so the model can distinguish log evidence from role process knowledge. Section `[C]` carries the explicit label: *"do not copy verbatim — derive specific actions from the log evidence above"*.
+
+#### Anti-parroting constraint
+
+Role guide content (e.g. "Review and prune alerts quarterly", "Deploy a canary to 1% of nodes") is generic process knowledge, not log-specific guidance. When role chunks are mixed into a single undifferentiated context block, the model tends to reproduce guide phrases verbatim rather than grounding remediation steps in the observed log evidence. Two complementary mitigations are applied:
+
+1. **Structural separation** — role guide hits are placed in a distinct `[C]` section with an explicit "do not copy verbatim" label, keeping them visually and semantically separate from log evidence (`[A]`) and system knowledge (`[B]`).
+2. **System prompt constraint** — `build_rag_system_prompt()` in `src/Prompts/detection_prompts.py` includes an explicit instruction: *"Use the Role scope reference only to understand the appropriate level and type of action for each role. Generate steps that are specific to this log entry — grounded in the log evidence and system knowledge. Do not reproduce generic process phrases from the role guide verbatim."*
 
 The system prompt instructs the model to use retrieved context to inform classification and produce a richer structured output:
 
@@ -290,7 +312,12 @@ Experiments/
     │   └── kb_utils.py          # KBClient — typed query interface for RAG notebooks
     ├── ML Based/                # E01 A/B/C — unsupervised ML anomaly detection
     ├── LLM/                     # E02 — few-shot CoT LLM baseline
-    ├── RAG/Vanilla RAG/         # E03 — retrieval-augmented generation baseline
+    ├── RAG/
+    │   ├── Vanilla RAG/         # E03 — RAG baseline; E04 — DeepSVDD-guided RAG
+    │   ├── Hybrid RAG/          # E05 — BM25 + Dense with RRF fusion
+    │   ├── Self Reflective RAG/ # E06 — iterative self-critique RAG
+    │   ├── Graph RAG/           # E07 — knowledge-graph-expanded retrieval
+    │   └── Temporal RAG/        # E08 — time-decay reranked retrieval
     └── Prompts/
         ├── detection_prompts.py # Shared LLM and RAG prompt builders
         └── eval_prompts.py      # Shared LLM-as-judge evaluation prompts

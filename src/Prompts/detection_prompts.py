@@ -464,7 +464,12 @@ def build_rag_system_prompt(config: DatasetConfig) -> str:
         "  cascade_potential : 1=isolated to one process, 2=affects nearby nodes, "
         "3=service-level impact, 4=system-wide cascade\n\n"
         "Risk Score is computed by the system — do not calculate it yourself:\n"
-        "  total = (system_impact x 0.4) + (error_type x 0.3) + (cascade_potential x 0.2)"
+        "  total = (system_impact x 0.4) + (error_type x 0.3) + (cascade_potential x 0.2)\n\n"
+        "Role guide usage: the user message contains a 'Role scope reference' section describing "
+        "each role's responsibilities and typical scope of action. Use it only to understand the "
+        "appropriate level and type of action for each role. For sre_action and devops_action, "
+        "generate steps that are specific to this log entry — grounded in the log evidence and "
+        "system knowledge. Do not reproduce generic process phrases from the role guide verbatim."
     )
 
 
