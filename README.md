@@ -150,6 +150,7 @@ All experiments operate on the **BGL dataset** using the same held-out test set 
 | E06 | Self-Reflective RAG | Extends Vanilla RAG with an iterative self-critique loop: if model confidence falls below 0.75 the model receives its own initial response and is prompted to revise it (up to 2 reflection rounds) | [E06_BGL_DIRECT_SELF_REFLECTIVE_RAG.ipynb](src/RAG/Self%20Reflective%20RAG/E06_BGL_DIRECT_SELF_REFLECTIVE_RAG.ipynb) |
 | E07 | Graph RAG | Builds a NetworkX knowledge graph over the KB corpus using component/level co-occurrence; 1-hop graph traversal expands the query with related templates before merging with dense retrieval results | [E07_BGL_DIRECT_GRAPH_RAG.ipynb](src/RAG/Graph%20RAG/E07_BGL_DIRECT_GRAPH_RAG.ipynb) |
 | E08 | Temporal RAG | Adds time as a retrieval dimension: dense candidates are reranked by a combined score (`0.7 × semantic + 0.3 × exp(−\|Δt\|/86400)`); retrieved logs are presented to the LLM chronologically to surface evolving error patterns | [E08_BGL_DIRECT_TEMPORAL_RAG.ipynb](src/RAG/Temporal%20RAG/E08_BGL_DIRECT_TEMPORAL_RAG.ipynb) |
+| E09 | DeepSVDD + Hybrid RAG | Combines Deep SVDD routing (Stage A/B/C) with BM25+Dense hybrid retrieval (RRF fusion, k=60); uncertain and anomalous logs are enriched with context retrieved from both sparse and dense indexes | [E09_DeepSVDD_Hybrid_RAG_Pipeline.ipynb](src/RAG/Hybrid%20RAG/E09_DeepSVDD_Hybrid_RAG_Pipeline.ipynb) |
 
 ---
 
